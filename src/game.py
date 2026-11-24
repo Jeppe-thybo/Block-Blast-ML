@@ -1,6 +1,8 @@
 #Game mechanics for Block Blast usign 64 bit integer bitboard to represent the game state. Each bit in the 64-bit integer represents a cell in the 8x8 grid, where a bit value of 1 indicates a block is present and 0 indicates an empty cell. The game logic includes functions for placing blocks, checking for completed lines, and updating the game state accordingly.
 
 import numpy as np
+import random
+
 from src.scoring import move_points, next_combo
 
 def make_piece(cells):
@@ -157,3 +159,18 @@ class blockblast:
     def get_global_score(self):
         # Return the current global score
         return self.global_score
+
+
+    def get_hand(self):
+        # Generate a random hand of 3 pieces from the available pieces
+        return random.choices(list(Pieces.values()), k=3)
+
+    def legal_moves(self, hand):
+        # Return a list of legal moves for the given hand of pieces
+        legal_moves = []
+        for piece in hand:
+            for row in range(8):
+                for col in range(8):
+                    if self.can_place_piece(piece, (row, col)):
+                        legal_moves.append((piece, (row, col)))
+        return legal_moves
