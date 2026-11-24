@@ -2,6 +2,7 @@
 
 import numpy as np
 import random
+import itertools
 
 from src.scoring import move_points, next_combo
 
@@ -174,3 +175,40 @@ class blockblast:
                     if self.can_place_piece(piece, (row, col)):
                         legal_moves.append((piece, (row, col)))
         return legal_moves
+
+
+    def best_move_sequence(self, hand):
+        current_score = self.global_score
+        best_sequence = []
+
+        for perm in itertools.permutations(hand):
+            game_copy = self.copy_game()
+            move_score = 0
+            moves = []
+
+            for piece in perm:
+                legal_moves = game_copy.legal_moves([piece])
+                if not legal_moves:
+                    break  # No legal moves for this piece, stop this permutation
+
+                # Choose the move that maximizes the score
+                best_move = None
+                best_move_score = -1
+
+                for move in legal_moves:
+                    temp_game = game_copy.copy_game()
+                    temp_game.play_move(move[0], move[1])
+                    move_score = temp_game.global_score - game_copy.global_score
+
+                    if move_score > best_move_score:
+                        best_move_score = move_score
+                        best_move = move
+
+                if best_move is not None:
+                    game_copy.play_move(best_move[0], best_move[1])
+                    moves.append(best_move)
+                    sequence_score += best_move_score
+
+            if sequence_score > current_score:
+                current_score = sequence_score
+                best_sequence = sequence

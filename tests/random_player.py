@@ -16,6 +16,7 @@ def play_random_game():
             hand.remove(piece)
 
 
+
 if __name__ == "__main__":
     scores = [play_random_game() for _ in range(200)]
     print("games:", len(scores), "mean:", sum(scores) / len(scores), "best:", max(scores))
