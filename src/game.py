@@ -1,6 +1,7 @@
 #Game mechanics for Block Blast usign 64 bit integer bitboard to represent the game state. Each bit in the 64-bit integer represents a cell in the 8x8 grid, where a bit value of 1 indicates a block is present and 0 indicates an empty cell. The game logic includes functions for placing blocks, checking for completed lines, and updating the game state accordingly.
 
 import numpy as np
+from src.scoring import move_points, next_combo
 
 def make_piece(cells):
     mask = 0
@@ -65,9 +66,41 @@ Pieces = {
 
 
 class blockblast:
-    def __init__(self, board = 0):
+    def __init__(self, board = 0, combo = 0, global_score = 0):
         self.board =  board # Initialize the game board as a 64-bit integer bitboard
+        self.combo = combo # Initialize the combo count
+        self.global_score = global_score # Initialize the score
 
+    def play_move(self, piece, position):
+        # Play a move by placing a piece and updating the game state
+        if not self.can_place_piece(piece, position):
+            raise ValueError("Cannot place piece at the given position.")
+
+        self.place_piece(piece, position)
+        completed_lines = self.check_completed_lines()
+        self.clear_completed_lines(completed_lines)
+
+        # Update score and combo based on the move
+        cells_placed = bin(piece).count('1')
+        lines_cleared = len(completed_lines)
+        move_score = move_points(cells_placed, lines_cleared, self.combo)
+        self.global_score += move_score
+        self.combo = next_combo(self.combo, lines_cleared)
+
+        return move_score
+
+    def game_over(self, hand):
+        #Given the 3 pieces and the current state of the board, check if all 3 pieces can be placed, including potential clearances.
+        for piece in hand:
+            for row in range(8):
+                for col in range(8):
+                    if self.can_place_piece(piece, (row, col)):
+                        return False  # Found a valid placement
+        return True  # No valid placements found, game over
+
+    def copy_game(self):
+        # Create a copy of the current game state
+        return blockblast(self.board, self.combo, self.global_score)
 
     def place_piece(self, piece, position):
         # Place a piece on the board at the specified position
@@ -121,4 +154,6 @@ class blockblast:
                     board_array[i][j] = 1
         return board_array
 
-    
+    def get_global_score(self):
+        # Return the current global score
+        return self.global_score
