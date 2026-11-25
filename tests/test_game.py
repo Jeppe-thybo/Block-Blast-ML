@@ -100,9 +100,12 @@ def test_play_move_rejects_impossible_move():
 
 
 def test_next_combo():
-    assert next_combo(0, 1) == 1        # one line starts a streak
-    assert next_combo(1, 2) == 3        # two more lines add 2
-    assert next_combo(3, 0) == 0        # no clear resets it
+    # next_combo returns (combo, misses)
+    assert next_combo(0, 1) == (1, 0)       # a clearing move starts a streak
+    assert next_combo(1, 2) == (2, 0)       # +1 per clearing move, however many lines
+    assert next_combo(3, 0, 0) == (3, 1)    # first miss: streak kept
+    assert next_combo(3, 0, 1) == (3, 2)    # second miss: still kept
+    assert next_combo(3, 0, 2) == (0, 0)    # third miss in a row resets it
 
 
 def test_that_combo_updates_correctly():
@@ -114,15 +117,21 @@ def test_that_combo_updates_correctly():
     assert game.board == 0              # the row cleared, nothing else was there
     assert game.combo == 1
 
-    # A move that clears nothing resets the streak
+    # The streak survives two moves without a clear...
     game.play_move(Pieces["single_block"], (5, 5))
+    game.play_move(Pieces["single_block"], (6, 6))
+    assert game.combo == 1
+    assert game.misses == 2
+
+    # ...and resets on the third
+    game.play_move(Pieces["single_block"], (7, 7))
     assert game.combo == 0
 
 
 def test_clearing_move_earns_bonus_and_streak_raises_it():
     game = blockblast(board=0b11111000)
     first = game.play_move(Pieces["I3_H"], (0, 0))      # 3 cells + 1 line, no streak yet
-    assert first == 3 + 24
+    assert first == 3 + 24 + 5 * 3                       # the whole piece was cleared: +5 per cell
 
     game.board = 0b11111000                              # set up another one-line clear
     second = game.play_move(Pieces["I3_H"], (0, 0))      # streak of 1 now raises the bonus

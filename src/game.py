@@ -69,26 +69,29 @@ Pieces = {
 
 
 class blockblast:
-    def __init__(self, board = 0, combo = 0, global_score = 0):
-        self.board =  board # Initialize the game board as a 64-bit integer bitboard
-        self.combo = combo # Initialize the combo count
-        self.global_score = global_score # Initialize the score
+    def __init__(self, board = 0, combo = 0, global_score = 0, misses = 0):
+        self.board = board
+        self.combo = combo
+        self.global_score = global_score
+        self.misses = misses
 
     def play_move(self, piece, position):
         # Play a move by placing a piece and updating the game state
         if not self.can_place_piece(piece, position):
             raise ValueError("Cannot place piece at the given position.")
 
+        before = self.board
         self.place_piece(piece, position)
+        placed = self.board & ~before
         completed_lines = self.check_completed_lines()
         self.clear_completed_lines(completed_lines)
 
-        # Update score and combo based on the move
         cells_placed = bin(piece).count('1')
         lines_cleared = len(completed_lines)
-        move_score = move_points(cells_placed, lines_cleared, self.combo)
+        fully_cleared = (placed & self.board) == 0
+        move_score = move_points(cells_placed, lines_cleared, self.combo, fully_cleared)
         self.global_score += move_score
-        self.combo = next_combo(self.combo, lines_cleared)
+        self.combo, self.misses = next_combo(self.combo, lines_cleared, self.misses)
 
         return move_score
 
@@ -103,8 +106,8 @@ class blockblast:
 
     def copy_game(self):
         # Create a copy of the current game state
-        return blockblast(self.board, self.combo, self.global_score)
-
+        return blockblast(self.board, self.combo, self.global_score, self.misses)
+    
     def place_piece(self, piece, position):
         # Place a piece on the board at the specified position
         # piece: 64-bit integer representing the piece shape

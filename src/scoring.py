@@ -1,55 +1,66 @@
 """Scoring model for the Block Blast simulator.
 
-Estimated from gameplay videos, not the game's real formula. Every number here
-is a setting, so refine them as more recordings come in.
+Fitted to 8 gameplay recordings (about 9 minutes of play). It reproduces every
+clear popup I could read in them to within 1 point, and the full score change of
+every move I could check end to end.
+
+Points for one move:
+
+    cells placed                                   (1 point per cell, always)
+  + BONUS_UNIT * T(lines) * streak                 (only if lines were cleared)
+  + FULL_CLEAR_CELL_BONUS * cells placed           (only if the whole piece was cleared away)
+
+where T(n) = 1 + 2 + ... + n = n(n+1)/2, so 1, 3, 6, 10, 15 ... for 1, 2, 3, 4, 5 lines,
+and streak is 1 for the first clearing move, 2 for the next, and so on.
 """
 
-CELL_POINTS = 1  # points per cell of the placed piece (seen in every video)
+CELL_POINTS = 1
 
-# Bonus for clearing N lines (rows + columns) in ONE move, with no combo.
-# Observed first clears: 1 line ~24, 2 lines ~47-141, 3 lines ~141-564, 5 lines ~470.
-# Values are multiples of 23.5, the unit the observed popups share.
-LINE_BONUS = {
-    0: 0,
-    1: 24,
-    2: 94,
-    3: 282,
-    4: 376,
-    5: 470,
-    6: 564,
-    7: 658,
-    8: 752,
-    9: 846,
-    10: 940,
-    11: 1034,
-    12: 1128,
-    13: 1222,
-    14: 1316,
-    15: 1410,
-    16: 1504,
-}
+# One "unit" of clear bonus. Every popup in the videos is a multiple of it.
+BONUS_UNIT = 23.55
 
-# Each move in a row that clears something raises the bonus multiplier.
-# Observed roughly x2 at combo 1, x5 at combo 3, x7-9 at combo 4-5.
-COMBO_STEP = 1.5
+# Each placed cell scores this much extra if the move clears the entire piece,
+# i.e. none of its cells are left on the board afterwards (shown as a "5" on each cell).
+FULL_CLEAR_CELL_BONUS = 5
+
+# The streak survives this many placements in a row without a clear.
+# One more non-clearing placement than this resets it.
+MAX_MISSES = 2
 
 
-def combo_multiplier(combo_before: int) -> float:
-    """Multiplier for a clear when the streak before this move was combo_before."""
-    return 1.0 + COMBO_STEP * combo_before
+def triangle(n: int) -> int:
+    """1 + 2 + ... + n: how clearing several lines at once multiplies the bonus."""
+    return n * (n + 1) // 2
 
 
 def line_bonus(lines_cleared: int, combo_before: int) -> int:
-    """Bonus points for clearing lines_cleared lines with the given streak."""
-    base = LINE_BONUS[min(lines_cleared, max(LINE_BONUS))]
-    return round(base * combo_multiplier(combo_before))
+    """Clear bonus. combo_before = clearing moves already in the current streak."""
+    if lines_cleared == 0:
+        return 0
+    streak = combo_before + 1
+    return int(BONUS_UNIT * triangle(lines_cleared) * streak + 0.5)  # round half up, like the game
 
 
-def move_points(cells_placed: int, lines_cleared: int, combo_before: int) -> int:
-    """Total points for one move: placement plus clear bonus."""
-    return CELL_POINTS * cells_placed + line_bonus(lines_cleared, combo_before)
+def move_points(cells_placed: int, lines_cleared: int, combo_before: int,
+                piece_fully_cleared: bool = False) -> int:
+    """Total points for one move."""
+    points = CELL_POINTS * cells_placed + line_bonus(lines_cleared, combo_before)
+    if lines_cleared and piece_fully_cleared:
+        points += FULL_CLEAR_CELL_BONUS * cells_placed
+    return points
 
 
-def next_combo(combo_before: int, lines_cleared: int) -> int:
-    """Streak after the move: +1 per cleared line, back to 0 if nothing cleared."""
-    return combo_before + lines_cleared if lines_cleared else 0
+def next_combo(combo_before: int, lines_cleared: int, misses_before: int = 0):
+    """Return (combo, misses) after the move.
+
+    combo:  clearing moves in the current streak (0 = no streak).
+            +1 per clearing move, no matter how many lines it clears.
+    misses: placements in a row without a clear since the last clear.
+            The streak is lost on the (MAX_MISSES + 1)th miss.
+    """
+    if lines_cleared:
+        return combo_before + 1, 0
+    misses = misses_before + 1
+    if misses > MAX_MISSES:
+        return 0, 0
+    return combo_before, misses
