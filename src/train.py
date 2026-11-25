@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import copy 
 from multiprocessing import Pool
 
 
@@ -71,7 +72,7 @@ def play_and_record(evaluate=simple_evaluate, beam_width=3, max_rounds=1000):
 
 LABEL_SCALE = 1000.0  # scale labels to [0, 1] range for better training stability
 
-def train_network(model, transitions, epochs=100, lr=0.001):
+def train_network(model, transitions, epochs=100, lr=0.0003):
     X = torch.tensor([t[0] for t in transitions], dtype=torch.float32)
     Reward = torch.tensor([t[1] / LABEL_SCALE for t in transitions], dtype=torch.float32).unsqueeze(1)
     X_next = torch.tensor([t[2] for t in transitions], dtype=torch.float32)
@@ -80,9 +81,13 @@ def train_network(model, transitions, epochs=100, lr=0.001):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
+    target_model = copy.deepcopy(model)
+
     for epoch in range(epochs):
+        if epoch % 10 == 0:
+            target_model.load_state_dict(model.state_dict())
         with torch.no_grad():
-            target = Reward + (1 - game_status) * model(X_next)
+            target = Reward + (1 - game_status) * target_model(X_next)
         prediction = model(X)
         loss = loss_fn(prediction, target)
         optimizer.zero_grad()
@@ -101,6 +106,9 @@ def self_play_loop(rounds=5, n_games=500, epochs=100):
         weights = extract_weights(model)
         data.extend(collect_games(100, weights=weights))
         print(f"Round {r + 1}/{rounds}: network mean score {mean_score(weights):.0f}")
+
+    os.makedirs("models", exist_ok=True)
+    torch.save(model.state_dict(), "models/TEST-NETWORK.pt")
     return model
 
 if __name__ == "__main__":
@@ -117,3 +125,5 @@ if __name__ == "__main__":
         self_play_loop(rounds=args.rounds, n_games=args.games, epochs=args.epochs)
     elif args.command == "collect":
         print(len(collect_games(args.games)))
+
+    

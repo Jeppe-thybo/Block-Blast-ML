@@ -6,8 +6,11 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
+import torch
 
 from src.game import blockblast
+from src.network import NeuralNetwork
+from src.train import extract_weights, evaluator_from_weights, LABEL_SCALE
 from src.search import best_move_sequence, simple_evaluate
 
 # Board cell values: 0 empty, 1 filled, 2 piece just placed, 3 cell cleared by this move
@@ -39,10 +42,13 @@ def make_frame(game, hand, status, round_no, placed=0, cleared=0):
     }
 
 
+
+
 def record_frames(evaluate=simple_evaluate, beam_width=3, max_rounds=1000):
     # One frame when a new hand is dealt, then one frame per placed piece
     game = blockblast()
     frames = []
+
 
     for round_no in range(1, max_rounds + 1):
         hand = game.get_hand()
@@ -171,16 +177,24 @@ if __name__ == "__main__":
     parser.add_argument("--gif", help="save an animation to this file instead of opening the viewer")
     parser.add_argument("--beam", type=int, default=3)
     parser.add_argument("--seed", type=int, help="fix the random hands to replay the same game")
+    parser.add_argument("--model", help="path to a trained network; leave out to use the simple bot")
     args = parser.parse_args()
 
     if args.seed is not None:
         random.seed(args.seed)
 
-    frames = record_frames(simple_evaluate, beam_width=args.beam)
+    if args.model:
+        model = NeuralNetwork()
+        model.load_state_dict(torch.load(args.model))
+        evaluate = evaluator_from_weights(extract_weights(model))
+    else:
+        evaluate = simple_evaluate
+
+    frames = record_frames(evaluate=evaluate, beam_width=args.beam)
     print(f"{len(frames)} frames, final score {frames[-1]['score']}")
 
     if args.gif:
         save_gif(frames, args.gif)
         print(f"saved {args.gif}")
     else:
-        show_interactive(frames)
+        show_interactive(frames)    
