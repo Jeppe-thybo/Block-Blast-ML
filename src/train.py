@@ -17,8 +17,8 @@ from src.encode import encode_cnn
 from src.network import BoardCNN
 from src.search import best_move_sequence, simple_evaluate, play_search_game
 
-LABEL_SCALE = 5000.0  # network predicts score / LABEL_SCALE, keeps targets around 0-1
-
+LABEL_SCALE = 50000.0  # network predicts score / LABEL_SCALE, keeps targets around 0-1
+GAMMA = 0.995
 
 # ---------------------------------------------------------------- evaluation
 
@@ -76,10 +76,17 @@ def _pool(state):
 
 
 def collect_games(n_games, state=None, beam_width=3):
-    """Play n_games in parallel and return all their transitions in one list."""
+    """Play n_games in parallel.
+
+    Returns (transitions, scores): all transitions in one list, and each game's
+    final score (the sum of its round rewards), so the same games double as a
+    measurement of how well this network plays.
+    """
     with _pool(state) as pool:
         games = pool.map(_play_worker, [beam_width] * n_games)
-    return [t for game in games for t in game]
+    transitions = [t for game in games for t in game]
+    scores = [sum(t[1] for t in game) for game in games]
+    return transitions, scores
 
 
 def mean_score(state, n_games=50, beam_width=3):
@@ -132,7 +139,7 @@ def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
 
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.SmoothL1Loss()  # Huber loss, less sensitive to outliers than MSE
     target_model = copy.deepcopy(model)
     target_model.eval()
     n = len(reward)
@@ -144,7 +151,7 @@ def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
         for i in range(0, n, batch_size):
             idx = perm[i:i + batch_size]
             with torch.no_grad():
-                target = reward[idx] + (1 - done[idx]) * target_model(boards_next[idx], extras_next[idx])
+                target = reward[idx] + GAMMA * (1 - done[idx]) * target_model(boards_next[idx], extras_next[idx])
             prediction = model(boards[idx], extras[idx])
             loss = loss_fn(prediction, target)
             optimizer.zero_grad()
@@ -158,25 +165,30 @@ def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
 # ---------------------------------------------------------------- self-play
 
 def self_play_loop(rounds=10, n_games=500, epochs=5, games_per_round=100,
-                   start=None, out="models/best_cnn.pt"):
+                   start=None, out="models/best_cnn.pt", buffer=60000):
     model = BoardCNN()
     if start:
         model.load_state_dict(torch.load(start))
-        print(f"continuing from {start}")
-        data = collect_games(n_games, state=model.state_dict())
+        print(f"continuing from {start}: playing {n_games} starting games")
+        data, scores = collect_games(n_games, state=model.state_dict())
+        print(f"  starting model mean score {sum(scores) / len(scores):.0f}")
     else:
-        data = collect_games(n_games)                  # round 0: games from the simple bot
+        print(f"playing {n_games} starting games with the simple bot")
+        data, _ = collect_games(n_games)               # round 0: games from the simple bot
 
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     best = 0
 
     for r in range(rounds):
+        data = data[-buffer:]                          # replay buffer: keep only the newest states
         print(f"Round {r + 1}/{rounds}: training")
         train_network(model, data, epochs=epochs)
         state = model.state_dict()
-        data.extend(collect_games(games_per_round, state=state))
-        score = mean_score(state)
-        print(f"Round {r + 1}/{rounds}: network mean score {score:.0f}")
+        new_data, scores = collect_games(games_per_round, state=state)
+        data.extend(new_data)
+        score = sum(scores) / len(scores)              # the new games double as the measurement
+        print(f"Round {r + 1}/{rounds}: network mean score {score:.0f} "
+              f"(min {min(scores)}, max {max(scores)}, {len(scores)} games)")
         if score > best:
             best = score
             torch.save(state, out)
@@ -195,10 +207,12 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--start", help="saved model to continue training from")
     parser.add_argument("--out", default="models/best_cnn.pt")
+    parser.add_argument("--buffer", type=int, default=60000, help="max number of newest states to train on")
     args = parser.parse_args()
 
     if args.command == "selfplay":
         self_play_loop(rounds=args.rounds, n_games=args.games, epochs=args.epochs,
-                       start=args.start, out=args.out)
+                       start=args.start, out=args.out, buffer=args.buffer)
     elif args.command == "collect":
-        print(len(collect_games(args.games)))
+        transitions, scores = collect_games(args.games)
+        print(len(transitions), "states, mean score", sum(scores) / len(scores))

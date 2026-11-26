@@ -9,8 +9,7 @@ def simple_evaluate(game):
 
 
 def _placements(game, piece):
-    return [(r, c) for r in range(8) for c in range(8)
-            if game.can_place_piece(piece, (r, c))]
+    return game.legal_positions(piece)
 
 
 def _score_all(evaluate, games):

@@ -68,6 +68,27 @@ Pieces = {
 }
 
 
+# ---- fast placement helpers -------------------------------------------------
+# A piece placed at (row, col) is just the piece's bits shifted by row*8 + col,
+# as long as it stays inside the board. For each piece we compute once where it
+# fits and the shifted mask for every such spot, then reuse it forever.
+_PIECE_INFO = {}
+
+
+def _piece_info(piece):
+    """Return (height, width, [((row, col), shifted_mask), ...]) for a piece, cached."""
+    info = _PIECE_INFO.get(piece)
+    if info is None:
+        cells = [i for i in range(64) if (piece >> i) & 1]
+        height = max(i // 8 for i in cells) + 1
+        width = max(i % 8 for i in cells) + 1
+        spots = [((r, c), piece << (r * 8 + c))
+                 for r in range(9 - height) for c in range(9 - width)]
+        info = (height, width, spots)
+        _PIECE_INFO[piece] = info
+    return info
+
+
 class blockblast:
     def __init__(self, board = 0, combo = 0, global_score = 0, misses = 0):
         self.board = board
@@ -80,9 +101,9 @@ class blockblast:
         if not self.can_place_piece(piece, position):
             raise ValueError("Cannot place piece at the given position.")
 
-        before = self.board
-        self.place_piece(piece, position)
-        placed = self.board & ~before
+        row, col = position
+        placed = piece << (row * 8 + col)      # the cells this piece occupies
+        self.board |= placed
         completed_lines = self.check_completed_lines()
         self.clear_completed_lines(completed_lines)
 
@@ -98,10 +119,8 @@ class blockblast:
     def game_over(self, hand):
         #Given the 3 pieces and the current state of the board, check if all 3 pieces can be placed, including potential clearances.
         for piece in hand:
-            for row in range(8):
-                for col in range(8):
-                    if self.can_place_piece(piece, (row, col)):
-                        return False  # Found a valid placement
+            if self.legal_positions(piece):
+                return False  # Found a valid placement
         return True  # No valid placements found, game over
 
     def copy_game(self):
@@ -113,10 +132,7 @@ class blockblast:
         # piece: 64-bit integer representing the piece shape
         # position: (row, col) tuple indicating where to place the piece
         row, col = position
-        for i in range(8):
-            for j in range(8):
-                if (piece >> (i * 8 + j)) & 1:
-                    self.board |= (1 << ((row + i) * 8 + (col + j)))
+        self.board |= piece << (row * 8 + col)
 
     def check_completed_lines(self):
         # Check for completed lines (rows) in the board
@@ -141,14 +157,15 @@ class blockblast:
     def can_place_piece(self, piece, position):
         # Check if a piece can be placed at the specified position without overlapping existing blocks, and without going out of bounds
         row, col = position
-        for i in range(8):
-            for j in range(8):
-                if (piece >> (i * 8 + j)) & 1:
-                    if row + i >= 8 or col + j >= 8:  # Check bounds
-                        return False
-                    if (self.board >> ((row + i) * 8 + (col + j))) & 1:  # Check overlap
-                        return False
-        return True
+        height, width, _ = _piece_info(piece)
+        if row < 0 or col < 0 or row + height > 8 or col + width > 8:  # Check bounds
+            return False
+        return (self.board & (piece << (row * 8 + col))) == 0          # Check overlap
+
+    def legal_positions(self, piece):
+        # Every (row, col) where the piece fits right now
+        board = self.board
+        return [pos for pos, mask in _piece_info(piece)[2] if not board & mask]
         
 
     def show_board(self):
@@ -171,47 +188,4 @@ class blockblast:
 
     def legal_moves(self, hand):
         # Return a list of legal moves for the given hand of pieces
-        legal_moves = []
-        for piece in hand:
-            for row in range(8):
-                for col in range(8):
-                    if self.can_place_piece(piece, (row, col)):
-                        legal_moves.append((piece, (row, col)))
-        return legal_moves
-
-
-    def best_move_sequence(self, hand):
-        current_score = self.global_score
-        best_sequence = []
-
-        for perm in itertools.permutations(hand):
-            game_copy = self.copy_game()
-            move_score = 0
-            moves = []
-
-            for piece in perm:
-                legal_moves = game_copy.legal_moves([piece])
-                if not legal_moves:
-                    break  # No legal moves for this piece, stop this permutation
-
-                # Choose the move that maximizes the score
-                best_move = None
-                best_move_score = -1
-
-                for move in legal_moves:
-                    temp_game = game_copy.copy_game()
-                    temp_game.play_move(move[0], move[1])
-                    move_score = temp_game.global_score - game_copy.global_score
-
-                    if move_score > best_move_score:
-                        best_move_score = move_score
-                        best_move = move
-
-                if best_move is not None:
-                    game_copy.play_move(best_move[0], best_move[1])
-                    moves.append(best_move)
-                    sequence_score += best_move_score
-
-            if sequence_score > current_score:
-                current_score = sequence_score
-                best_sequence = sequence
+        return [(piece, pos) for piece in hand for pos in self.legal_positions(piece)]
