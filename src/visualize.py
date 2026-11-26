@@ -9,8 +9,8 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 import torch
 
 from src.game import blockblast
-from src.network import NeuralNetwork
-from src.train import extract_weights, evaluator_from_weights, LABEL_SCALE
+from src.network import BoardCNN
+from src.train import LABEL_SCALE, cnn_evaluator
 from src.search import best_move_sequence, simple_evaluate
 
 # Board cell values: 0 empty, 1 filled, 2 piece just placed, 3 cell cleared by this move
@@ -184,9 +184,9 @@ if __name__ == "__main__":
         random.seed(args.seed)
 
     if args.model:
-        model = NeuralNetwork()
+        model = BoardCNN()
         model.load_state_dict(torch.load(args.model))
-        evaluate = evaluator_from_weights(extract_weights(model))
+        evaluate = cnn_evaluator(model)
     else:
         evaluate = simple_evaluate
 
