@@ -1,5 +1,5 @@
 from src.game import blockblast
-from src.encode import encode_game
+from src.encode import encode_game, encode_cnn
 from src.network import NeuralNetwork
 from src.search import best_move_sequence, simple_evaluate, play_search_game
 import torch
@@ -130,4 +130,19 @@ if __name__ == "__main__":
     elif args.command == "collect":
         print(len(collect_games(args.games)))
 
-    
+def cnn_evaluator(model):
+    model.eval()
+    def many(games):
+        boards, extras = zip(*(encode_cnn(g) for g in games))
+        b = np.stack(boards)
+        b = torch.from_numpy(b).unsqueeze(1)     # stack boards into one tensor of shape (N, 1, 8, 8)
+        e = torch.from_numpy(np.stack(extras))     # stack extras into one tensor of shape (N, 2)
+        with torch.no_grad():
+            values = model(b, e).squeeze(1).numpy()
+        return [g.global_score + v * LABEL_SCALE for g, v in zip(games, values)]
+
+    def evaluate(game):
+        return many([game])[0]
+
+    evaluate.many = many
+    return evaluate

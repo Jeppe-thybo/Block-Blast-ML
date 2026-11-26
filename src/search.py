@@ -13,6 +13,14 @@ def _placements(game, piece):
             if game.can_place_piece(piece, (r, c))]
 
 
+def _score_all(evaluate, games):
+    """Score many boards at once if the evaluator supports it (evaluate.many), else one by one."""
+    many = getattr(evaluate, "many", None)
+    if many is not None:
+        return list(many(games))
+    return [evaluate(g) for g in games]
+
+
 def best_move_sequence(game, hand, evaluate=simple_evaluate, beam_width=5):
     """Return the best list of (piece, position) moves for this hand.
 
@@ -24,20 +32,24 @@ def best_move_sequence(game, hand, evaluate=simple_evaluate, beam_width=5):
     """
     best_key, best_moves = None, []
     for order in set(itertools.permutations(hand)):
-        states = [(game.copy_game(), [])]
+        states = [(None, game.copy_game(), [])]
         for piece in order:
-            candidates = []
-            for g, moves in states:
+            new_games, new_moves = [], []
+            for _, g, moves in states:
                 for pos in _placements(g, piece):
                     g2 = g.copy_game()
                     g2.play_move(piece, pos)
-                    candidates.append((evaluate(g2), g2, moves + [(piece, pos)]))
-            if not candidates:
+                    new_games.append(g2)
+                    new_moves.append(moves + [(piece, pos)])
+            if not new_games:
                 continue                      # this piece fits nowhere, skip it
-            candidates.sort(key=lambda c: c[0], reverse=True)
-            states = [(g, m) for _, g, m in candidates[:beam_width]]
-        for g, moves in states:
-            key = (len(moves), evaluate(g))
+            scores = _score_all(evaluate, new_games)    # one call for all candidates
+            candidates = sorted(zip(scores, new_games, new_moves), key=lambda c: c[0], reverse=True)
+            states = candidates[:beam_width]
+        for score, g, moves in states:
+            if score is None:
+                score = evaluate(g)
+            key = (len(moves), score)
             if best_key is None or key > best_key:
                 best_key, best_moves = key, moves
     return best_moves
