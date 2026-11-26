@@ -20,7 +20,39 @@ def _score_all(evaluate, games):
     return [evaluate(g) for g in games]
 
 
+def _find_full_sequence(game, pieces):
+    """Depth-first search for ANY order and placement that fits every piece. None if impossible."""
+    if not pieces:
+        return []
+    for i, piece in enumerate(pieces):
+        for pos in game.legal_positions(piece):
+            g2 = game.copy_game()
+            g2.play_move(piece, pos)
+            rest = _find_full_sequence(g2, pieces[:i] + pieces[i + 1:])
+            if rest is not None:
+                return [(piece, pos)] + rest
+    return None
+
+
 def best_move_sequence(game, hand, evaluate=simple_evaluate, beam_width=5):
+    """Best (piece, position) moves for this hand, never giving up while a full placement exists.
+
+    The beam search keeps only the best few boards after each piece, so it can
+    throw away the only line in which all three pieces fit. If it comes back
+    short, we retry with a much wider beam, and as a last resort search for any
+    sequence that places every piece.
+    """
+    moves = _beam_search(game, hand, evaluate, beam_width)
+    if len(moves) < len(hand):
+        moves = max(moves, _beam_search(game, hand, evaluate, beam_width * 20), key=len)
+    if len(moves) < len(hand):
+        full = _find_full_sequence(game, list(hand))
+        if full is not None:
+            moves = full
+    return moves
+
+
+def _beam_search(game, hand, evaluate, beam_width):
     """Return the best list of (piece, position) moves for this hand.
 
     Tries every order of the pieces. For each piece it tries every legal

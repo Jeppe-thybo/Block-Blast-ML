@@ -4,7 +4,6 @@ Run from the project root:
     python -m src.train selfplay --rounds 10 --epochs 5
     python -m src.train selfplay --rounds 10 --start models/best_cnn.pt   # continue training
 """
-import copy
 import os
 from multiprocessing import Pool
 
@@ -17,8 +16,14 @@ from src.encode import encode_cnn
 from src.network import BoardCNN
 from src.search import best_move_sequence, simple_evaluate, play_search_game
 
-LABEL_SCALE = 50000.0  # network predicts score / LABEL_SCALE, keeps targets around 0-1
-GAMMA = 0.995
+# ---------------------------------------------------------------- settings
+# These are the settings of CNN run 1, the best run so far (24.5k mean after 10
+# rounds, still rising). Change ONE at a time and compare against that run.
+LABEL_SCALE = 5000.0   # network predicts score / LABEL_SCALE
+GAMMA = 1.0            # discount per round (1.0 = no discount)
+N_STEP = 1             # rounds of real points in each target before trusting the network
+LOSS = "huber"           # "mse" or "huber"
+LR = 3e-4              # learning rate
 
 # ---------------------------------------------------------------- evaluation
 
@@ -84,8 +89,8 @@ def collect_games(n_games, state=None, beam_width=3):
     """
     with _pool(state) as pool:
         games = pool.map(_play_worker, [beam_width] * n_games)
-    transitions = [t for game in games for t in game]
-    scores = [sum(t[1] for t in game) for game in games]
+    transitions = [t for game_transitions, _ in games for t in game_transitions]
+    scores = [score for _, score in games]
     return transitions, scores
 
 
@@ -98,37 +103,53 @@ def mean_score(state, n_games=50, beam_width=3):
 
 # ---------------------------------------------------------------- data
 
-def play_and_record(evaluate=simple_evaluate, beam_width=3, max_rounds=1000):
-    """Play one game. Returns a list of (state, reward, next_state, done) per round,
-    where a state is the pair (board 8x8, extras [combo, misses]) from encode_cnn."""
+def play_and_record(evaluate=simple_evaluate, beam_width=3, max_rounds=5000):
+    """Play one game and turn it into n-step training examples.
+
+    Returns (transitions, final_score). Each transition is
+        (state, n_step_return, state_after_n, game_ended, discount)
+    where n_step_return is the discounted points of the next N_STEP rounds
+    (fewer near the end of the game), state_after_n is the board N_STEP rounds
+    later, game_ended says the game died inside that window (nothing to add
+    after it), and discount = GAMMA ** (rounds in the window).
+    """
     game = blockblast()
-    transitions = []
+    states = [encode_cnn(game)]
+    rewards = []
+    died = False
 
     for _ in range(max_rounds):
-        state = encode_cnn(game)
         score_before = game.global_score
-
         hand = game.get_hand()
         moves = best_move_sequence(game, hand, evaluate, beam_width)
         for piece, position in moves:
             game.play_move(piece, position)
-
-        done = len(moves) < len(hand)  # some piece could not be placed: game over
-        transitions.append((state, game.global_score - score_before, encode_cnn(game), done))
-
-        if done:
+        rewards.append(game.global_score - score_before)
+        states.append(encode_cnn(game))
+        if len(moves) < len(hand):  # some piece could not be placed: game over
+            died = True
             break
 
-    return transitions
+    T = len(rewards)
+    transitions = []
+    for t in range(T):
+        end = min(t + N_STEP, T)
+        ret = sum(GAMMA ** k * rewards[t + k] for k in range(end - t))
+        ended = died and end == T
+        transitions.append((states[t], ret, states[end], ended, GAMMA ** (end - t)))
+    return transitions, game.global_score
 
 
 # ---------------------------------------------------------------- training
 
-def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
-    """TD training: target = reward of the round + value of the next board (0 at game over).
+def train_network(model, transitions, epochs=5, lr=LR, batch_size=256):
+    """n-step TD training.
 
-    Trains on shuffled mini-batches. The target network is a frozen copy that is
-    refreshed at the start of every epoch, so the target holds still while we learn.
+    target = discounted points of the next N_STEP rounds
+             + GAMMA**n * value of the board N_STEP rounds later (0 if the game died in between)
+
+    Targets are recomputed at the start of every epoch from the network as it is
+    then, and held fixed during that epoch while training on shuffled mini-batches.
     """
     boards = torch.from_numpy(np.stack([t[0][0] for t in transitions])).unsqueeze(1)       # (N, 1, 8, 8)
     extras = torch.from_numpy(np.stack([t[0][1] for t in transitions]))                    # (N, 2)
@@ -136,24 +157,25 @@ def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
     extras_next = torch.from_numpy(np.stack([t[2][1] for t in transitions]))               # (N, 2)
     reward = torch.tensor([t[1] / LABEL_SCALE for t in transitions], dtype=torch.float32).unsqueeze(1)
     done = torch.tensor([float(t[3]) for t in transitions], dtype=torch.float32).unsqueeze(1)
+    discount = torch.tensor([t[4] for t in transitions], dtype=torch.float32).unsqueeze(1)
 
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.SmoothL1Loss()  # Huber loss, less sensitive to outliers than MSE
-    target_model = copy.deepcopy(model)
-    target_model.eval()
+    loss_fn = nn.SmoothL1Loss() if LOSS == "huber" else nn.MSELoss()
     n = len(reward)
 
     for epoch in range(epochs):
-        target_model.load_state_dict(model.state_dict())
-        perm = torch.randperm(n)                       # new random order each epoch
+        # Targets for this epoch, from the network as it is now, then held fixed
+        with torch.no_grad():
+            next_value = torch.cat([model(boards_next[i:i + 1024], extras_next[i:i + 1024])
+                                    for i in range(0, n, 1024)])
+            targets = reward + discount * (1 - done) * next_value
+
+        perm = torch.randperm(n)
         total, batches = 0.0, 0
         for i in range(0, n, batch_size):
             idx = perm[i:i + batch_size]
-            with torch.no_grad():
-                target = reward[idx] + GAMMA * (1 - done[idx]) * target_model(boards_next[idx], extras_next[idx])
-            prediction = model(boards[idx], extras[idx])
-            loss = loss_fn(prediction, target)
+            loss = loss_fn(model(boards[idx], extras[idx]), targets[idx])
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -166,6 +188,7 @@ def train_network(model, transitions, epochs=5, lr=3e-4, batch_size=256):
 
 def self_play_loop(rounds=10, n_games=500, epochs=5, games_per_round=100,
                    start=None, out="models/best_cnn.pt", buffer=60000):
+    print(f"settings: LABEL_SCALE={LABEL_SCALE} GAMMA={GAMMA} N_STEP={N_STEP} LOSS={LOSS} LR={LR}")
     model = BoardCNN()
     if start:
         model.load_state_dict(torch.load(start))
