@@ -9,6 +9,7 @@ import os
 import copy 
 from multiprocessing import Pool
 
+LABEL_SCALE = 5000  # scale labels to [0, 1] range for better training stability
 
 def extract_weights(model):
     layers = [m for m in model.layers if isinstance(m, nn.Linear)]
@@ -19,7 +20,7 @@ def evaluator_from_weights(weights):
     def evaluate(game):
         x = np.array(encode_game(game), dtype=np.float32)
         for W, b in weights[:-1]:
-            x = np.maximum(x @ W + b, 0)
+            z = x @ W + b; x = z / (1 + np.exp(-z))
         W, b = weights[-1]
         return game.global_score + (x @ W + b).item() * LABEL_SCALE
     return evaluate
@@ -69,9 +70,6 @@ def play_and_record(evaluate=simple_evaluate, beam_width=3, max_rounds=1000):
 
     return transitions
 
-
-LABEL_SCALE = 1000.0  # scale labels to [0, 1] range for better training stability
-
 def train_network(model, transitions, epochs=100, lr=0.0003):
     X = torch.tensor([t[0] for t in transitions], dtype=torch.float32)
     Reward = torch.tensor([t[1] / LABEL_SCALE for t in transitions], dtype=torch.float32).unsqueeze(1)
@@ -101,14 +99,20 @@ def self_play_loop(rounds=5, n_games=500, epochs=100):
     model = NeuralNetwork()
     data = collect_games(n_games)                      # round 0: simple bot
 
+    best = 0
+    os.makedirs("models", exist_ok=True)
+
     for r in range(rounds):
         train_network(model, data, epochs=epochs)
         weights = extract_weights(model)
         data.extend(collect_games(100, weights=weights))
-        print(f"Round {r + 1}/{rounds}: network mean score {mean_score(weights):.0f}")
+        score = mean_score(weights)
+        print(f"Round {r + 1}/{rounds}: network mean score {score:.0f}")
+        if score > best:
+            best = score
+            torch.save(model.state_dict(), "models/best.pt")
+            print(f"  new best, saved models/best.pt")
 
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/TEST-NETWORK.pt")
     return model
 
 if __name__ == "__main__":
